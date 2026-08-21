@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request, Response, status
 from pydantic import BaseModel
 
 router = APIRouter(tags=["health"])
@@ -21,6 +21,18 @@ async def health_check() -> HealthResponse:
     """Report whether the HTTP process is accepting requests."""
     return HealthResponse(
         status="ok",
+        service="meta-restapi",
+        timestamp=datetime.now(UTC),
+    )
+
+
+@router.get("/ready", response_model=HealthResponse, summary="Service readiness")
+async def readiness(request: Request, response: Response) -> HealthResponse:
+    ready = bool(getattr(request.app.state, "ready", False))
+    if not ready:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    return HealthResponse(
+        status="ready" if ready else "not_ready",
         service="meta-restapi",
         timestamp=datetime.now(UTC),
     )

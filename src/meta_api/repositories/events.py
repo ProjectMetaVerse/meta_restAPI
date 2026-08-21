@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import sqlite3
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -68,11 +69,26 @@ class SQLiteEventRepository(EventRepository):
 
     def __init__(self, database_url: str) -> None:
         self.database_path = _parse_sqlite_path(database_url)
-        if self.database_path != ":memory:":
+        self._lock = threading.RLock()
+        self._keeper: sqlite3.Connection | None = None
+        self._memory_uri: str | None = None
+        if self.database_path == ":memory:":
+            self._memory_uri = f"file:meta_api_{id(self)}?mode=memory&cache=shared"
+            self._keeper = sqlite3.connect(self._memory_uri, uri=True, check_same_thread=False)
+        elif self.database_path != ":memory:":
             Path(self.database_path).expanduser().parent.mkdir(parents=True, exist_ok=True)
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path, timeout=10, isolation_level=None)
+        if self._memory_uri is not None:
+            connection = sqlite3.connect(
+                self._memory_uri,
+                timeout=10,
+                isolation_level=None,
+                uri=True,
+                check_same_thread=False,
+            )
+        else:
+            connection = sqlite3.connect(self.database_path, timeout=10, isolation_level=None)
         connection.row_factory = sqlite3.Row
         return connection
 
@@ -80,13 +96,31 @@ class SQLiteEventRepository(EventRepository):
         await asyncio.to_thread(self._initialize)
 
     def _initialize(self) -> None:
-        with self._connect() as connection:
-            connection.executescript(_SCHEMA)
+        with self._lock:
+            connection = self._keeper or self._connect()
+            try:
+                connection.executescript(_SCHEMA)
+            finally:
+                if self._keeper is None:
+                    connection.close()
+
+    async def close(self) -> None:
+        await asyncio.to_thread(self._close)
+
+    def _close(self) -> None:
+        with self._lock:
+            if self._keeper is not None:
+                self._keeper.close()
+                self._keeper = None
 
     async def save(self, event: Event) -> Event:
         return await asyncio.to_thread(self._save, event)
 
     def _save(self, event: Event) -> Event:
+        with self._lock:
+            return self._save_unlocked(event)
+
+    def _save_unlocked(self, event: Event) -> Event:
         payload = json.dumps(event.payload, ensure_ascii=False, separators=(",", ":"))
         connection = self._connect()
         try:
@@ -139,6 +173,10 @@ class SQLiteEventRepository(EventRepository):
         return await asyncio.to_thread(self._get, event_id)
 
     def _get(self, event_id: str) -> Event | None:
+        with self._lock:
+            return self._get_unlocked(event_id)
+
+    def _get_unlocked(self, event_id: str) -> Event | None:
         try:
             with self._connect() as connection:
                 row = connection.execute(
@@ -152,6 +190,10 @@ class SQLiteEventRepository(EventRepository):
         return await asyncio.to_thread(self._get_by_key, key)
 
     def _get_by_key(self, key: str) -> Event | None:
+        with self._lock:
+            return self._get_by_key_unlocked(key)
+
+    def _get_by_key_unlocked(self, key: str) -> Event | None:
         try:
             with self._connect() as connection:
                 row = connection.execute(
@@ -165,6 +207,10 @@ class SQLiteEventRepository(EventRepository):
         return await asyncio.to_thread(self._list, limit, before)
 
     def _list(self, limit: int, before: tuple[datetime, str] | None) -> EventPage:
+        with self._lock:
+            return self._list_unlocked(limit, before)
+
+    def _list_unlocked(self, limit: int, before: tuple[datetime, str] | None) -> EventPage:
         try:
             with self._connect() as connection:
                 params: list[Any] = []
