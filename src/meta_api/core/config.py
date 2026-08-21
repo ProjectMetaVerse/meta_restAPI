@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     database_url: str = "sqlite+aiosqlite:///./meta_api.db"
     encryption_key: SecretStr | None = None
     signing_key: SecretStr | None = None
+    event_read_token: SecretStr | None = None
 
     @field_validator("log_level")
     @classmethod

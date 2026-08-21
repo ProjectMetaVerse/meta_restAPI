@@ -1,0 +1,11 @@
+# Event logging
+
+The service exposes `POST /api/v1/events` for validated event ingestion. Each request must include an `idempotency_key`, `name`, and `source`; optional actor and session references are bounded strings, while `payload` is arbitrary JSON metadata limited to 64 KiB. `occurred_at` must be timezone-aware and defaults to the server receive time. The response contains the stable event record and `replayed`, which is `false` for a new logical event and `true` when the original record is returned for an idempotent replay.
+
+The SQLite-backed implementation is behind the asynchronous `EventRepository` interface. Schema creation is deterministic and occurs during application startup. A unique index on `idempotency_key` prevents duplicate logical events, and time/event-ID indexes support bounded newest-first cursor pagination through `GET /api/v1/events?limit=50&before=<cursor>`. The maximum page size is 100. `GET /api/v1/events/{event_id}` retrieves one event.
+
+> Retrieval can be protected without depending on authentication or profile code by setting `META_EVENT_READ_TOKEN`. When configured, retrieval requires `Authorization: Bearer <token>`; ingestion remains independent of that mechanism.
+
+The event endpoint emits a generated or client-supplied `X-Request-ID` response header. Logs include only the correlation ID, generated event ID, and event name. They never serialize event payloads, credentials, authorization headers, or secret settings. Callers must therefore avoid placing credentials, access tokens, passwords, or unredacted personal data in payload metadata. Payloads are retained in the configured database for the operational lifetime of the event log; deployment operators are responsible for database retention, deletion, encryption at rest, and access controls. A future retention job should delete records according to the service's data-retention requirements rather than copying payloads into application logs.
+
+Run the complete local quality gate with `make check`. The repository includes API and repository tests for field and payload limits, serialization, idempotent replay and conflicts, persistence rollback, pagination, read authorization, and log redaction.
