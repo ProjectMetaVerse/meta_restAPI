@@ -57,3 +57,5 @@ make coverage
 # Or run the complete local gate:
 make check
 ```
+
+The release checklist, deployment prerequisites, rollback procedure, migration limitation, and manual Meta App Dashboard configuration are documented in [`RELEASE_READINESS.md`](RELEASE_READINESS.md).
