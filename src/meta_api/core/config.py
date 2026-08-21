@@ -29,6 +29,15 @@ class Settings(BaseSettings):
     graph_api_base_url: str = "https://graph.facebook.com"
     graph_api_version: str = "v21.0"
     request_timeout: float = Field(default=10.0, gt=0)
+    graph_connect_timeout: float = Field(default=5.0, gt=0)
+    graph_read_timeout: float = Field(default=10.0, gt=0)
+    graph_max_retries: int = Field(default=2, ge=0, le=3)
+    meta_permissions: tuple[str, ...] = ("public_profile", "email")
+    oauth_state_ttl_seconds: int = Field(default=600, gt=0)
+    session_cookie_name: str = "meta_session"
+    secure_cookies: bool = True
+    allowed_redirect_hosts: tuple[str, ...] = ()
+    oauth_state_secret: SecretStr | None = None
 
     database_url: str = "sqlite+aiosqlite:///./meta_api.db"
     encryption_key: SecretStr | None = None
