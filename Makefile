@@ -10,7 +10,7 @@ test:
 	pytest
 
 coverage:
-	coverage run -m pytest && coverage report -m
+	coverage run -m pytest --junitxml=test-results.xml && coverage report --fail-under=80 --show-missing
 
 format:
 	ruff format .
