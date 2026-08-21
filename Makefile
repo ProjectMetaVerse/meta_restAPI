@@ -10,7 +10,11 @@ test:
 	pytest
 
 coverage:
-	coverage run -m pytest && coverage report -m
+	rm -rf coverage_html coverage.xml .coverage
+	coverage run -m pytest
+	coverage report -m --fail-under=85
+	coverage xml -o coverage.xml
+	coverage html -d coverage_html
 
 format:
 	ruff format .

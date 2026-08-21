@@ -60,6 +60,8 @@ source = ["meta_api"]
 
 [tool.coverage.report]
 exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:"]
+fail_under = 85
+precision = 2
 
 [tool.coverage.html]
 directory = "coverage_html"
