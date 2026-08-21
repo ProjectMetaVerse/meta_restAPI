@@ -1,7 +1,9 @@
-"""Event-log HTTP endpoints."""
+from __future__ import annotations
 
 import base64
+import binascii
 import logging
+from datetime import datetime
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
@@ -42,6 +44,13 @@ def _authorize_read(request: Request, authorization: str | None) -> None:
         )
 
 
+def _persistence_unavailable() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="event persistence unavailable",
+    )
+
+
 @router.post("/events", response_model=EventCreateResponse, status_code=status.HTTP_202_ACCEPTED)
 async def create_event(
     request: Request,
@@ -49,7 +58,6 @@ async def create_event(
     body: EventCreateRequest,
     service: EventService = event_service_dependency,
 ) -> EventCreateResponse:
-    """Accept an event once; replaying an idempotency key returns the original event."""
     correlation_id = _correlation_id(request)
     response.headers["X-Request-ID"] = correlation_id
     try:
@@ -58,9 +66,7 @@ async def create_event(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except EventRepositoryError as exc:
         logger.exception("event_persistence_error", extra={"request_id": correlation_id})
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="event persistence unavailable"
-        ) from exc
+        raise _persistence_unavailable() from exc
     logger.info(
         "event_accepted",
         extra={"request_id": correlation_id, "event_id": event.event_id, "event_name": event.name},
@@ -72,11 +78,16 @@ async def create_event(
 async def get_event(
     event_id: str,
     request: Request,
+    response: Response,
     authorization: str | None = Header(default=None),
 ) -> EventResponse:
-    """Retrieve one event when the optional event-read token permits access."""
+    response.headers["X-Request-ID"] = _correlation_id(request)
     _authorize_read(request, authorization)
-    event = await request.app.state.event_repository.get(event_id)
+    try:
+        event = await request.app.state.event_repository.get(event_id)
+    except EventRepositoryError as exc:
+        logger.exception("event_lookup_error")
+        raise _persistence_unavailable() from exc
     if event is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="event not found")
     return EventResponse.model_validate(event)
@@ -85,28 +96,30 @@ async def get_event(
 @router.get("/events", response_model=EventPageResponse)
 async def list_events(
     request: Request,
+    response: Response,
     limit: int = Query(default=50, ge=1, le=MAX_PAGE_SIZE),
     before: str | None = Query(default=None, max_length=128),
     authorization: str | None = Header(default=None),
 ) -> EventPageResponse:
-    """List events newest first using a bounded timestamp cursor."""
-    from datetime import datetime
-
+    response.headers["X-Request-ID"] = _correlation_id(request)
     _authorize_read(request, authorization)
     cursor = None
     if before:
         try:
             decoded = base64.urlsafe_b64decode(before.encode()).decode()
             timestamp, event_id = decoded.rsplit("|", 1)
+            if not event_id:
+                raise ValueError("missing event id")
             cursor = (datetime.fromisoformat(timestamp), event_id)
-        except ValueError as exc:
+        except (ValueError, UnicodeError, binascii.Error) as exc:
             raise HTTPException(
                 status_code=422, detail="before must be a valid event cursor"
             ) from exc
     try:
         page = await request.app.state.event_repository.list(limit=limit, before=cursor)
     except EventRepositoryError as exc:
-        raise HTTPException(status_code=503, detail="event persistence unavailable") from exc
+        logger.exception("event_listing_error")
+        raise _persistence_unavailable() from exc
     return EventPageResponse(
         items=[EventResponse.model_validate(event) for event in page.items],
         next_cursor=page.next_cursor,

@@ -22,6 +22,13 @@ def test_settings_normalize_level_and_require_production_values() -> None:
         Settings(log_level="verbose")
 
 
+def test_settings_rejects_insecure_redirect_uri() -> None:
+    with pytest.raises(ValidationError, match="redirect_uri"):
+        Settings(redirect_uri="http://example.test/callback")
+    with pytest.raises(ValidationError, match="redirect_uri"):
+        Settings(redirect_uri="https://user:pass@example.test/callback")
+
+
 def test_settings_accepts_complete_production_configuration() -> None:
     configured = Settings(
         environment="production",
@@ -111,6 +118,24 @@ async def test_event_service_replays_and_rejects_conflicting_idempotency(fake_re
         await service.ingest(request.model_copy(update={"name": "different"}))
 
 
+@pytest.mark.asyncio
+async def test_concurrent_retries_are_idempotent(settings) -> None:
+    import asyncio
+
+    from meta_api.repositories.events import SQLiteEventRepository
+
+    repository = SQLiteEventRepository(":memory:")
+    await repository.initialize()
+    service = EventService(repository)
+    request = EventCreateRequest.model_validate(
+        {"idempotency_key": "concurrent", "name": "created", "source": "test"}
+    )
+    results = await asyncio.gather(*(service.ingest(request) for _ in range(8)))
+    assert sum(replayed for _, replayed in results) == 7
+    assert len({event.event_id for event, _ in results}) == 1
+    await repository.close()
+
+
 def test_structured_formatter_omits_sensitive_log_extras() -> None:
     import logging
 
@@ -120,4 +145,4 @@ def test_structured_formatter_omits_sensitive_log_extras() -> None:
     formatted = StructuredFormatter().format(record)
     assert "event accepted" in formatted
     assert "never-log" not in formatted
-    assert "req-1" not in formatted
+    assert '"request_id": "req-1"' in formatted

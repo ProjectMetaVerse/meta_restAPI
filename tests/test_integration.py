@@ -17,6 +17,7 @@ def test_health_and_openapi_expose_representative_contracts(client: TestClient) 
     assert document.status_code == 200
     paths = document.json()["paths"]
     assert "/api/v1/health" in paths
+    assert "/api/v1/ready" in paths
     assert "/api/v1/events" in paths
     assert paths["/api/v1/events"]["post"]["responses"]["202"]["content"]["application/json"][
         "schema"
@@ -124,3 +125,54 @@ def test_graph_timeout_is_isolated_and_deterministic(settings) -> None:
     import asyncio
 
     asyncio.run(run())
+
+
+def test_readiness_is_distinct_from_liveness(client: TestClient) -> None:
+    assert client.get("/api/v1/health").status_code == 200
+    ready = client.get("/api/v1/ready")
+    assert ready.status_code == 200
+    assert ready.json()["status"] == "ready"
+
+
+def test_request_id_is_generated_for_all_responses(client: TestClient) -> None:
+    response = client.get("/api/v1/health")
+    assert response.headers["X-Request-ID"]
+    assert len(response.headers["X-Request-ID"]) <= 128
+
+
+def test_oversized_request_is_rejected_before_validation(settings) -> None:
+    app = create_app(settings.model_copy(update={"max_request_bytes": 32}))
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/events",
+            content='{"idempotency_key":"too-large","name":"n","source":"s"}',
+            headers={"Content-Type": "application/json", "X-Request-ID": "size-check"},
+        )
+    assert response.status_code == 413
+    assert response.headers["X-Request-ID"] == "size-check"
+    assert response.json()["detail"] == "request body too large"
+
+
+def test_event_read_and_list_failures_map_to_safe_503(client: TestClient) -> None:
+    from meta_api.models.event import EventRepositoryError
+
+    class FailingReadRepository:
+        async def get(self, event_id: str):
+            raise EventRepositoryError("database password must not escape")
+
+        async def list(self, *, limit: int, before=None):
+            raise EventRepositoryError("database password must not escape")
+
+    client.app.state.event_repository = FailingReadRepository()
+    read = client.get("/api/v1/events/event-1", headers={"X-Request-ID": "read-failure"})
+    listed = client.get("/api/v1/events", headers={"X-Request-ID": "list-failure"})
+    assert read.status_code == listed.status_code == 503
+    assert read.json()["detail"] == listed.json()["detail"] == "event persistence unavailable"
+    assert read.headers["X-Request-ID"] == "read-failure"
+    assert listed.headers["X-Request-ID"] == "list-failure"
+
+
+def test_malformed_base64_cursor_is_rejected(client: TestClient) -> None:
+    response = client.get("/api/v1/events?before=%%%%")
+    assert response.status_code == 422
+    assert response.json()["detail"] == "before must be a valid event cursor"
